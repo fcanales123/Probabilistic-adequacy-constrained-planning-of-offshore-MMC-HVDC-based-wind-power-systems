@@ -16,7 +16,9 @@ end
 
 % MMC availability constraint for loop evaluation
 A_mmc_min_loop = linspace(0.98,0.9991,length(WPP_CAP_loop));  % Minimum required availability of MMC (max 0.99913675), naive=0.995, , Optimal_5states=0.984267021276596, Optimal_exact=0.984267021276596
+%best=0.984267
 
+EIR_target=99.984; % Original reliability evaluated using load modelling comulative method 99.984 and exact method 99.989
 ConvUSD = 1.3; % Conversion ratio UK pounds to USD
 offshore_distance = 100; % Distance offshore in km (a number from 10-100)
 num_rounding_states = 5; % Number of states rounded to in the WF model use 'exact' if no rounding required
@@ -53,6 +55,8 @@ nREDCTCPs= 2; % integer number for number of receiving ends in MTDC
 e = 0.5; % Exposure factor for frequency-duration (exact) model
 Annual_peak=2850; % Annual peak load for Load duration curve
 
+% copulaModel = Fit_TwoSite_Wind_Copula( turbine, 'KM_90.mat', 'KM_100.mat'); % Analysis of correlation
+
 % Pre-allocate the output arrays before the parfor loop
 EWSUP = zeros(length(WPP_CAP_loop), length(A_mmc_min_loop));
 EENS = zeros(length(WPP_CAP_loop), length(A_mmc_min_loop));
@@ -75,10 +79,15 @@ parfor x=1:length(WPP_CAP_loop)
     local_Sustainability_row = zeros(1, length(A_mmc_min_loop));
     local_Reliability_row = zeros(1, length(A_mmc_min_loop));
 
+    % WPP Parameters
+    WPP_CAP= WPP_CAP_loop(x); % Total connected wind farm power in MW [600, 800||810, 1000||1005, 1200, 1400||1410, 1600||1605, 1800, 2000||2010] DTU||IEA
+    %if independence is assumed
+    [rounded_FCOPT, FCOPT_TM_rounded, WT_States] = Wind_Farm_Probabilistic_Modelling(turbine, WPP_CAP,offshore_distance, num_wind_states, num_rounding_states); 
+
+    %if copula correlation is used
+    % [rounded_FCOPT, FCOPT_TM_rounded, WT_States] = Wind_Farm_Probabilistic_Modelling_Copula(turbine, WPP_CAP, offshore_distance, num_wind_states, num_rounding_states, copulaModel);
+
     for y=1:length(A_mmc_min_loop)
-        % WPP Parameters
-        WPP_CAP= WPP_CAP_loop(x); % Total connected wind farm power in MW [600, 800||810, 1000||1005, 1200, 1400||1410, 1600||1605, 1800, 2000||2010] DTU||IEA
-        [rounded_FCOPT, FCOPT_TM_rounded, WT_States] = Wind_Farm_Probabilistic_Modelling(turbine, WPP_CAP, offshore_distance, num_wind_states, num_rounding_states);   
         
         % % Display results
         % disp('Rounded FCOPT Combined Capacity Table:');
@@ -390,7 +399,7 @@ parfor x=1:length(WPP_CAP_loop)
 end
 
 rounded_matrix = round(Reliability, 3);
-[rows, cols] = find(rounded_matrix == 99.984); % Original reliability evaluated using comulative method 99.9836866363668 and exact method 99.9891731571509
+[rows, cols] = find(rounded_matrix == EIR_target); % Original reliability evaluated using comulative method 99.9836866363668 and exact method 99.9891731571509
 
 numMatches = length(rows);
 selected_costs = zeros(numMatches, 1);
@@ -432,3 +441,54 @@ colormap(jet);
 xlim([min(Sustainability(:)) max(Sustainability(:))]);
 ylim([min(Cost(:)) max(Cost(:))]);
 zlim([min(Reliability(:)) max(Reliability(:))]);
+
+%% Analysis of MMC minimum availability constraint
+rounded_matrix = round(Reliability, 3);
+
+% All possible EIR targets present in the rounded reliability matrix
+EIR_targets = unique(rounded_matrix(:));
+EIR_targets = EIR_targets(~isnan(EIR_targets));
+
+nTargets = numel(EIR_targets);
+
+selected_Ammc = zeros(nTargets,1);
+selected_WPP  = zeros(nTargets,1);
+selected_Cost = zeros(nTargets,1);
+
+for j = 1:nTargets
+
+    EIR_target_test = EIR_targets(j);
+
+    % Find all designs having this EIR
+    [rows, cols] = find(rounded_matrix == EIR_target_test);
+
+    % Cost of all feasible designs at this EIR
+    idx = sub2ind(size(Cost), rows, cols);
+    selected_costs = Cost(idx);
+
+    % Minimum-cost design
+    [~, minIdx] = min(selected_costs);
+
+    minRow = rows(minIdx);
+    minCol = cols(minIdx);
+
+    % Store optimal design
+    selected_Ammc(j) = A_mmc_min_loop(minCol)*100;
+    selected_WPP(j)  = WPP_CAP_loop(minRow);
+    selected_Cost(j) = Cost(minRow,minCol);
+
+end
+
+% Results
+results = table(EIR_targets, selected_Ammc, selected_WPP, selected_Cost, ...
+    'VariableNames', {'EIR_target', ...
+                      'MMC_Availability_pct', ...
+                      'WPP_CAP_MW', ...
+                      'Cost'});
+
+disp(results)
+
+unique_Ammc = unique(selected_Ammc);
+
+disp('Unique optimal MMC availability constraints [%]:')
+disp(unique_Ammc)
